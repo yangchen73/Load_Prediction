@@ -1,14 +1,7 @@
-import numpy as np
-import pandas as pd
-import matplotlib.pyplot as plt
 import torch
 import torch.nn as nn
-import time
 import math
-import argparse
 import torch.nn.functional as F
-from sklearn.preprocessing import MinMaxScaler
-
 
 class KANLinear(torch.nn.Module):
     def __init__(
@@ -274,5 +267,4 @@ class LSTM_kan(nn.Module):
         c0 = torch.zeros(self.num_layers, x.size(0), self.hidden_dim).requires_grad_()
         out, _ = self.lstm(x, (h0.detach(), c0.detach()))
         out = self.e_kan(out[:, -1, :])
-        out = out.view(-1, self.output_steps, out.size(-1) // self.output_steps)
         return out
