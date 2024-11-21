@@ -10,6 +10,7 @@ from itertools import cycle
 from model.LSTMKAN import LSTM_kan
 from model.GRU import GRU
 from model.LSTM import LSTM
+from model.KAN import KAN
 from sklearn.preprocessing import MinMaxScaler
 
 input_features = ['Power', 'max_power', 'power_t-1', 'min_power','RMS','10%_quantile_power','power_t-2','min_power','Peak_to_Peak','power_t-12','power_t-4','power_t-10', 'power_t-8', 'power_t-7' ,'approx_max' ,'power_t-3' ,'90%_quantile_power' ,'Temperature', 'Duration_Above90%', 'power_t-11', 'Duration_Below10%', 'power_t-5', 'detail_kurtosis', 'median_power', 'power_t-6', 'std_power', 'Humidity', 'approx_sd', 'FFT_Magnitude_mean', 'approx_energy', 'Month', 'Hour', 'is_holiday']
@@ -23,6 +24,7 @@ length_size = 168
 batch_size = 64
 epochs = 100
 model_type = 'LSTM'
+
 def data_loader(window, length_size, batch_size, data):
     seq_len = window  
     sequence_length = seq_len + length_size  
@@ -55,8 +57,6 @@ def model_train(model_type):
                 loss.backward()
                 optimizer.step()
             print(f"Epoch {t}/{epochs}")
-        training_time = time.time() - start_time
-        print(f"Training time: {training_time}")
         best_model_path = 'model_data/GRU.pt'
         torch.save(net.state_dict(), best_model_path)
 
@@ -88,6 +88,20 @@ def model_train(model_type):
             print(f"Epoch {t}/{epochs}")
         torch.save(net.state_dict(), 'model_data/LSTM_kan.pt')
 
+    elif model_type == "KAN":
+        net = KAN(layers_hidden=[input_dim, length_size*output_dim], grid_size=5, spline_order=3)
+        criterion = nn.MSELoss()
+        optimizer = optim.Adam(net.parameters(), lr=0.001)
+        for t in range(1, epochs + 1): 
+            for _, (datapoints, labels) in enumerate(dataloader_train):
+                optimizer.zero_grad()
+                preds = net(datapoints[:, -1, :])
+                loss = criterion(preds, labels)
+                loss.backward()
+                optimizer.step()
+            print(f"Epoch {t}/{epochs}")
+        torch.save(net.state_dict(), 'model_data/KAN.pt')
+
     training_time = time.time() - start_time
     print(f"Training time: {training_time}")
 
@@ -103,9 +117,15 @@ def model_test(x_data, y_data, model_type):
     elif model_type == "LSTM_kan":
         net = LSTM_kan(input_dim = input_dim, hidden_dim = 32, num_layers = 2, output_dim = output_dim)
         net.load_state_dict(torch.load('model_data/LSTM_kan.pt', weights_only=False))
+    elif model_type == "KAN":
+        net = KAN(layers_hidden=[input_dim, length_size*output_dim], grid_size=5, spline_order=3)
+        net.load_state_dict(torch.load('model_data/KAN.pt', weights_only=False))
 
     net.eval()
-    pred = net(x_data)
+    if model_type == "KAN":
+        pred = net(x_data[:, -1, :])
+    else:
+        pred = net(x_data)
     pred = pred.detach().cpu()
     true = y_data.detach().cpu()
     pred_uninverse = scaler.inverse_transform(pred) 
@@ -130,44 +150,47 @@ def calculate_errors(actual, predicted):
     mask = ~np.isnan(actual) & ~np.isnan(predicted)
     
     actual_filtered = actual[mask]
+    print(actual_filtered)
     predicted_filtered = predicted[mask]
+    print(predicted_filtered)
     
     mae = mean_absolute_error(actual_filtered, predicted_filtered)
     rmse = np.sqrt(mean_squared_error(actual_filtered, predicted_filtered))
     r2 = r2_score(actual_filtered, predicted_filtered)
     return mae, rmse, r2
 
-data = pd.read_csv('data/office建模特征_1.csv')
-data = data.dropna()
-data = data.reset_index(drop = True)
-train_result = data[:int(train_ratio*len(data))][['Power']]
-test_result = data[int(train_ratio*len(data)):][['Power']]
-data = data[input_features]
-data_target = data[output_features]
-scaler = MinMaxScaler(feature_range=(0,1))
-data_inverse = scaler.fit_transform(np.array(data))
-data = data_inverse
-data_train = data[:int(train_ratio*len(data)), :]
-data_test = data[int(train_ratio*len(data)):, :]
+if __name__ == '__main__':
+    data = pd.read_csv('data/office建模特征_1.csv')
+    data = data.dropna()
+    data = data.reset_index(drop = True)
+    train_result = data[:int(train_ratio*len(data))][['Power']]
+    test_result = data[int(train_ratio*len(data)):][['Power']]
+    data = data[input_features]
+    data_target = data[output_features]
+    scaler = MinMaxScaler(feature_range=(0,1))
+    data_inverse = scaler.fit_transform(np.array(data))
+    data = data_inverse
+    data_train = data[:int(train_ratio*len(data)), :]
+    data_test = data[int(train_ratio*len(data)):, :]
 
-dataloader_train, X_train, y_train = data_loader(window_size, length_size, batch_size, data_train)
-dataloader_test, X_test, y_test = data_loader(window_size, length_size, batch_size, data_test)
+    dataloader_train, X_train, y_train = data_loader(window_size, length_size, batch_size, data_train)
+    dataloader_test, X_test, y_test = data_loader(window_size, length_size, batch_size, data_test)
 
-model_train(model_type)
-data_test_inverse = scaler.fit_transform(np.array(data_target).reshape(-1, 1))
-data_train_uninverse = scaler.inverse_transform(np.array(data_train).reshape(-1, 1))
-y_train_pred, y_train_real = model_test(X_train, y_train, model_type)
-y_test_pred, y_test_real = model_test(X_test, y_test, model_type)
-train_result = generate_predictions(train_result, y_train_pred)
-test_result = generate_predictions(test_result, y_test_pred)
+    #model_train(model_type)
+    data_test_inverse = scaler.fit_transform(np.array(data_target).reshape(-1, 1))
+    data_train_uninverse = scaler.inverse_transform(np.array(data_train).reshape(-1, 1))
+    y_train_pred, y_train_real = model_test(X_train, y_train, model_type)
+    y_test_pred, y_test_real = model_test(X_test, y_test, model_type)
+    train_result = generate_predictions(train_result, y_train_pred)
+    test_result = generate_predictions(test_result, y_test_pred)
 
-train_mae, train_rmse, train_r2 = calculate_errors(train_result['Power'], train_result['predict'])
-test_mae, test_rmse, test_r2 = calculate_errors(test_result['Power'], test_result['predict'])
-score = pd.DataFrame({
-        'Dataset': ['Train', 'Test'],
-        'MAE': [train_mae, test_mae],
-        'RMSE': [train_rmse, test_rmse],
-        'r2': [train_r2, test_r2]
-})
+    train_mae, train_rmse, train_r2 = calculate_errors(train_result['Power'], train_result['predict'])
+    test_mae, test_rmse, test_r2 = calculate_errors(test_result['Power'], test_result['predict'])
+    score = pd.DataFrame({
+            'Dataset': ['Train', 'Test'],
+            'MAE': [train_mae, test_mae],
+            'RMSE': [train_rmse, test_rmse],
+            'r2': [train_r2, test_r2]
+    })
 
-score.to_csv(("result/LSTM_kan.csv"), index=True)
+    score.to_csv(("result/LSTM.csv"), index=True)
