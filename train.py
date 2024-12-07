@@ -1,13 +1,15 @@
 import pandas as pd
 import numpy as np
 import torch
+import random
 import torch.nn as nn
 import torch.optim as optim
 import torch.nn.functional
 import matplotlib.pyplot as plt
 import time
-from sklearn.metrics import mean_absolute_error, mean_squared_error, r2_score
-from itertools import cycle
+import os
+from sklearn.metrics import mean_absolute_error, mean_squared_error, r2_score, mean_absolute_percentage_error
+from sklearn.preprocessing import OneHotEncoder
 from model.LSTMKAN import LSTM_kan
 from model.GRU import GRU
 from model.LSTM import LSTM
@@ -16,26 +18,37 @@ from model.MLP import MLP
 from sklearn.preprocessing import MinMaxScaler
 
 loaction_type = 'resident'
-model_type = 'GRU'
+model_type = 'LSTM_kan'
 
-input_features_office = ['Power', 'max_power', 'power_t-1', 'min_power','RMS','10%_quantile_power','power_t-2','min_power','Peak_to_Peak','power_t-12','power_t-4','power_t-10', 'power_t-8', 'power_t-7' ,'approx_max' ,'power_t-3' ,'90%_quantile_power' ,'Temperature', 'Duration_Above90%', 'power_t-11', 'Duration_Below10%', 'power_t-5', 'detail_kurtosis', 'median_power', 'power_t-6', 'std_power', 'Humidity', 'approx_sd', 'FFT_Magnitude_mean', 'approx_energy', 'Month', 'Hour', 'is_holiday']
+input_features_office = ['Power','RMS','max_power','10%_quantile_power','min_power','is_holiday','Hour','power_t-1','Duration_Above90%','90%_quantile_power','power_t-2','approx_max','median_power','Peak_to_Peak','Duration_Below10%','power_t-9']
 
-input_features_commercial = ['Power','max_power','RMS','min_power','10%_quantile_power','power_t-2','power_t-9','90%_quantile_power','power_t-12','approx_energy','power_t-1','power_t-4','power_t-3','Peak_to_Peak','FFT_Total_energy','power_t-11','approx_max','FFT_Magnitude_max','power_t-8','Duration_Below10%','power_t-7','Duration_Above90%','std_power','power_t-6','Temperature','approx_sd','power_t-10','FFT_Magnitude_mean','power_t-5','Humidity','Month','Hour']
+input_features_commercial = ['Power','RMS','max_power','10%_quantile_power','90%_quantile_power','min_power','power_t-1','median_power','Hour','power_t-12','power_t-9','Duration_Above90%','approx_energy','power_t-6','power_t-2','approx_max']
 
-input_features_public = ['Power', 'max_power','power_t-1','90%_quantile_power','Peak_to_Peak','10%_quantile_power','min_power','power_t-12','power_t-2','power_t-9','power_t-8','Month','Hour']
+input_features_public = ['Power','power_t-1','RMS','max_power','min_power','90%_quantile_power','10%_quantile_power','Hour','power_t-2','Duration_Below10%','power_t-12','power_t-5','Temperature','median_power','approx_max','power_t-3']
 
-input_features_resident = ['Power','RMS','median_power','90%_quantile_power','power_t-1','max_power','10%_quantile_power','approx_mean','power_t-2','min_power','approx_energy','FFT_Magnitude_max','power_t-12','FFT_Total_energy','Duration_Below10%','power_t-9','approx_max','Temperature','power_t-8','power_t-4','power_t-3','Humidity','power_t-5','Duration_Above90%','Peak_to_Peak','power_t-11','power_t-6','power_t-7','Month','Hour']
+input_features_resident = ['Power','RMS','max_power','power_t-1','90%_quantile_power','min_power','10%_quantile_power','Hour','median_power','approx_energy','approx_mean','is_holiday','approx_max','power_t-6','FFT_Total_energy','power_t-7']
 
 input_features_dict = {'office': input_features_office, 'commercial': input_features_commercial, 'public': input_features_public,'resident': input_features_resident}
 
 output_features = ['Power']
+
 train_ratio = 0.8
 window_size = 24
-input_dim = len(input_features_dict[loaction_type])
+input_dim = len(input_features_dict[loaction_type]) - 1
 output_dim = len(output_features)
-length_size = 168
+length_size = 720
 batch_size = 128
-epochs = 60
+epochs = 100
+
+def set_seed(seed_value=42):
+    random.seed(seed_value)  
+    np.random.seed(seed_value)  
+    torch.manual_seed(seed_value)  
+    if torch.cuda.is_available():
+        torch.cuda.manual_seed(seed_value)  
+        torch.cuda.manual_seed_all(seed_value) 
+    torch.backends.cudnn.deterministic = True  
+    torch.backends.cudnn.benchmark = False  
 
 def data_loader(window, length_size, batch_size, data_x, data_y):
     seq_len = window  
@@ -58,105 +71,93 @@ def data_loader(window, length_size, batch_size, data_x, data_y):
     dataloader = torch.utils.data.DataLoader(ds, batch_size=batch_size,shuffle=True) 
     return dataloader, x_data, y_data
 
-def model_train(model_type):
+def model_train(model_type, patience=10):
     start_time = time.time()
+    best_val_loss = float('inf') 
+    epochs_no_improve = 0  
+    best_model = None 
+
     if model_type == "GRU":
-        net = GRU(input_size = input_dim, hidden_size = 50, num_layers = 2, output_size = length_size)
-        criterion = nn.MSELoss()
-        optimizer = optim.Adam(net.parameters(), lr=0.001)
-        for t in range(1, epochs + 1): 
-            for _, (datapoints, labels) in enumerate(dataloader_train):
-                optimizer.zero_grad()
-                preds = net(datapoints)
-                loss = criterion(preds, labels)
-                loss.backward()
-                optimizer.step()
-            print(f"Epoch {t}/{epochs}")
-        best_model_path = f'model_data/{loaction_type}_GRU.pt'
-        torch.save(net.state_dict(), best_model_path)
-
+        net = GRU(input_size=input_dim, hidden_size=64, num_layers=2, output_size=length_size)
     elif model_type == "LSTM":
-        net = LSTM(input_size = input_dim, hidden_size = 50, num_layers = 2, output_size = length_size)
-        criterion = nn.MSELoss()
-        optimizer = optim.Adam(net.parameters(), lr=0.001)
-        for t in range(1, epochs + 1): 
-            for _, (datapoints, labels) in enumerate(dataloader_train):
-                optimizer.zero_grad()
-                preds = net(datapoints)
-                loss = criterion(preds, labels)
-                loss.backward()
-                optimizer.step()
-            print(f"Epoch {t}/{epochs}")
-        torch.save(net.state_dict(), f'model_data/{loaction_type}_LSTM.pt')
-
+        net = LSTM(input_size=input_dim, hidden_size=66, num_layers=2, output_size=length_size)
     elif model_type == "LSTM_kan":
-        net = LSTM_kan(input_size = input_dim, hidden_size = 50, num_layers = 2, output_size = length_size)
-        criterion = nn.MSELoss()
-        optimizer = optim.Adam(net.parameters(), lr=0.001)
-        for t in range(1, epochs + 1): 
-            for _, (datapoints, labels) in enumerate(dataloader_train):
-                optimizer.zero_grad()
-                preds = net(datapoints)
-                loss = criterion(preds, labels)
-                loss.backward()
-                optimizer.step()
-            print(f"Epoch {t}/{epochs}")
-        torch.save(net.state_dict(), f'model_data/{loaction_type}_LSTM_kan.pt')
-
+        net = LSTM_kan(input_size=input_dim, hidden_size=64, num_layers=2, output_size1= 72, output_size2 = length_size)
     elif model_type == "KAN":
-        net = KAN(layers_hidden=[input_dim*window_size, length_size*output_dim], grid_size=5, spline_order=3)
-        criterion = nn.MSELoss()
-        optimizer = optim.Adam(net.parameters(), lr=0.001)
-        for t in range(1, epochs + 1): 
-            for _, (datapoints, labels) in enumerate(dataloader_train):
-                optimizer.zero_grad()
-                datapoints = datapoints.reshape(datapoints.shape[0], -1)
-                preds = net(datapoints)
-                loss = criterion(preds, labels)
-                loss.backward()
-                optimizer.step()
-            print(f"Epoch {t}/{epochs}")
-        torch.save(net.state_dict(), f'model_data/{loaction_type}_KAN.pt')
-
+        net = KAN(layers_hidden=[input_dim * window_size, length_size * output_dim], grid_size = 5, spline_order=3)
     elif model_type == "MLP":
-        net = MLP(input_size = input_dim*window_size, hidden_size = 50, output_size = length_size)
-        criterion = nn.MSELoss()
-        optimizer = optim.Adam(net.parameters(), lr=0.001)
-        for t in range(1, epochs + 1): 
-            for _, (datapoints, labels) in enumerate(dataloader_train):
-                optimizer.zero_grad()
-                datapoints = datapoints.reshape(datapoints.shape[0], -1)
-                preds = net(datapoints)
-                loss = criterion(preds, labels)
-                loss.backward()
-                optimizer.step()
-            print(f"Epoch {t}/{epochs}")
-        torch.save(net.state_dict(), f'model_data/{loaction_type}_MLP.pt')
+        net = MLP(input_size = input_dim*window_size, hidden_size1 = 64, hidden_size2=32, output_size = length_size)
+    else:
+        raise ValueError(f"Invalid model type: {model_type}")
+
+    total_params = sum(p.numel() for p in net.parameters())
+    print(f"Total number of parameters in the {model_type} model: {total_params}")
+    criterion = nn.MSELoss()
+    optimizer = optim.Adam(net.parameters(), lr=0.001)
+
+    for t in range(1, epochs + 1):
+        # Training loop
+        net.train()
+        for _, (datapoints, labels) in enumerate(dataloader_train):
+            optimizer.zero_grad()
+            preds = net(datapoints) if model_type not in ["KAN", "MLP"] else net(datapoints.reshape(datapoints.shape[0], -1))
+            loss = criterion(preds, labels)
+            loss.backward()
+            optimizer.step()
+
+        # Validation loop
+        net.eval()
+        val_loss = 0.0
+        with torch.no_grad():
+            for _, (datapoints, labels) in enumerate(dataloader_test):
+                preds = net(datapoints) if model_type not in ["KAN", "MLP"] else net(datapoints.reshape(datapoints.shape[0], -1))
+                val_loss += criterion(preds, labels).item()
+        val_loss /= len(dataloader_test)
+
+        print(f"Epoch {t}/{epochs}, Validation Loss: {val_loss:.4f}")
+
+        # Check for improvement
+        if val_loss < best_val_loss:
+            best_val_loss = val_loss
+            best_model = net.state_dict()  
+            epochs_no_improve = 0
+        else:
+            epochs_no_improve += 1
+
+        # Early stopping
+        if epochs_no_improve >= patience:
+            print(f"Early stopping triggered after {t} epochs.")
+            break
+
+    # Save the best model
+    best_model_path = f'model_data/{loaction_type}_{model_type}.pt'
+    torch.save(best_model, best_model_path)
 
     training_time = time.time() - start_time
     print(f"Training time: {training_time}")
 
-    return net
+    return net, training_time
 
 def model_test(x_data, y_data, model_type, scaler):
     if model_type == "GRU":
-        net = GRU(input_size = input_dim, hidden_size = 50, num_layers = 2, output_size = length_size)
+        net = GRU(input_size = input_dim, hidden_size = 64, num_layers = 2, output_size = length_size)
         net.load_state_dict(torch.load(f'model_data/{loaction_type}_GRU.pt', weights_only=False))  
     elif model_type == "LSTM":
-        net = LSTM(input_size = input_dim, hidden_size = 50, num_layers = 2, output_size = length_size)
+        net = LSTM(input_size = input_dim, hidden_size = 66, num_layers = 2, output_size = length_size)
         net.load_state_dict(torch.load(f'model_data/{loaction_type}_LSTM.pt', weights_only=False))
     elif model_type == "LSTM_kan":
-        net = LSTM_kan(input_size = input_dim, hidden_size = 50, num_layers = 2, output_size = length_size)
+        net = LSTM_kan(input_size=input_dim, hidden_size=64, num_layers=2, output_size1= 72, output_size2 = length_size)
         net.load_state_dict(torch.load(f'model_data/{loaction_type}_LSTM_kan.pt', weights_only=False))
     elif model_type == "KAN":
         net = KAN(layers_hidden=[input_dim*window_size, length_size*output_dim], grid_size=5, spline_order=3)
         net.load_state_dict(torch.load(f'model_data/{loaction_type}_KAN.pt', weights_only=False))
     elif model_type == "MLP":
-        net = MLP(input_size = input_dim*window_size, hidden_size = 50, output_size = length_size)
+        net = MLP(input_size = input_dim*window_size, hidden_size1 = 64, hidden_size2=32, output_size = length_size)
         net.load_state_dict(torch.load(f'model_data/{loaction_type}_MLP.pt', weights_only=False))
+    else:
+        raise ValueError(f"Invalid model type: {model_type}")
 
     net.eval()
-
     if model_type == "KAN" or model_type == "MLP":
         pred = net(x_data.reshape(x_data.shape[0], -1))
     else:
@@ -187,13 +188,14 @@ def calculate_errors(actual, predicted):
     actual_filtered = actual[mask]
     predicted_filtered = predicted[mask]
 
-    
     mae = mean_absolute_error(actual_filtered, predicted_filtered)
     rmse = np.sqrt(mean_squared_error(actual_filtered, predicted_filtered))
     r2 = r2_score(actual_filtered, predicted_filtered)
-    return mae, rmse, r2
+    mape = mean_absolute_percentage_error(actual_filtered, predicted_filtered)
 
-def plot_predictions(train_result, test_result):
+    return mae, rmse, r2, mape
+
+def plot_train_and_test(train_result, test_result):
 
     train_actual = train_result['Power']
     train_predicted = train_result['predict']
@@ -220,42 +222,112 @@ def plot_predictions(train_result, test_result):
     plt.tight_layout()
     plt.show()
 
+def plot_predictions(test_result):
+    test_actual = test_result['Power']
+    test_predicted = test_result['predict']
+
+    absolute_errors = abs(test_actual - test_predicted)
+
+    _, axes = plt.subplots(2, 1, figsize=(14, 10), sharex=True)
+    
+    axes[0].plot(test_result['Time'], test_actual, label="True values", color="black", alpha=0.7, linewidth=1.5)
+    axes[0].plot(test_result['Time'], test_predicted, label="Predicted values", color="blue", alpha=0.7, linewidth=1.5)
+    axes[0].set_title("Load forecasting model performance degradation process diagram")
+    axes[0].set_ylabel("Power")
+    axes[0].legend()
+    axes[0].grid(True)
+    
+    axes[1].plot(test_result['Time'], absolute_errors, label="Absolute errors", color="red", alpha=0.7, linewidth=1.5)
+    axes[1].set_title("Absolute errors over time")
+    axes[1].set_xlabel("Time")
+    axes[1].set_ylabel("Power")
+    axes[1].legend()
+    axes[1].grid(True)
+    
+    plt.tight_layout()
+    plt.savefig(os.path.join('figure/prediction', f'{loaction_type}_{model_type}.png'))
+
 if __name__ == '__main__':
-    data = pd.read_csv(f'data/{loaction_type}建模特征_1.csv')
+    set_seed(42)
+    data = pd.read_csv(f'data/{loaction_type}建模特征_3.csv')
     data = data.dropna()
     data = data.reset_index(drop = True)
-    train_result = data[:int(train_ratio*len(data))][['Power']]
-    test_result = data[int(train_ratio*len(data)):][['Power']]
-    data_x = data[input_features_dict[loaction_type]]
-    data_y = data[output_features]
-    scaler_x = MinMaxScaler(feature_range=(0,1))
-    scaler_y = MinMaxScaler(feature_range=(0,1))
-    data_x = scaler_x.fit_transform(np.array(data_x))
-    data_y = scaler_y.fit_transform(np.array(data_y))
-    data_train_x = data_x[:int(train_ratio*len(data)), :]
-    data_train_y = data_y[:int(train_ratio*len(data)), :]
-    data_test_x = data_x[int(train_ratio*len(data)):, :]
-    data_test_y = data_y[int(train_ratio*len(data)):, :]
+    data['Time'] = pd.to_datetime(data['Time'])
+    data['Hour'] = [np.cos(x * (2 * np.pi / 23)) for x in data['Hour']]
 
+    larger_2018 = data[data['Time'] >= '2018-01-01 00:00:00'].index.min()
+    smaller_2019 = data[data['Time'] < '2019-01-01 00:00:00'].index.max()
+    larger_2019 = data[data['Time'] >= '2019-01-01 00:00:00'].index.min()
+    smaller_2020 = data[data['Time'] < '2020-01-01 00:00:00'].index.max()
+
+    train_result = data[:smaller_2019+1][['Time', 'Power']]
+    validate_result = data[larger_2018:smaller_2019+1][['Time', 'Power']]
+    test_result = data[larger_2019:smaller_2020+1][['Time', 'Power']]
+
+    data_x = data[input_features_dict[loaction_type]]
+
+    if (loaction_type != 'public') and (loaction_type != 'commercial'):
+        data_x = data_x.drop(columns = ['Power', 'Hour', 'is_holiday'], axis = 1)
+        no_need_scaler = data[['Hour', 'is_holiday']]
+    else:
+        data_x = data_x.drop(columns = ['Power', 'Hour'], axis = 1)
+        no_need_scaler = data[['Hour']]
+
+    scaler_x = MinMaxScaler(feature_range=(0, 1))
+    data_x = scaler_x.fit_transform(np.array(data_x))
+    data_x = pd.DataFrame(data_x)
+    data_x =  pd.concat([data_x, no_need_scaler], axis = 1)
+    data_x = np.array(data_x)
+    print(data_x.shape)
+    scaler_y = MinMaxScaler(feature_range=(0, 1))
+    data_y = scaler_y.fit_transform(np.array(data[output_features]))
+
+    '''
+    data_x_numerical = data[[item for item in input_features_dict[loaction_type] if item not in ['Month', 'Hour', 'season']]]
+    data_x_time = data[['Hour', 'Month']].copy()
+    data_x_time['Hour'] = [np.cos(x * (2 * np.pi / 23)) for x in data_x_time['Hour']]
+    data_x_time['Month'] = [np.sin(x * (2 * np.pi / 11)) for x in data_x_time['Month']]
+
+    data_x_category = data[['season']] 
+    encoder = OneHotEncoder(sparse_output = False)
+    data_x_category = encoder.fit_transform(data_x_category[['season']])  
+
+    scaler_x = MinMaxScaler(feature_range=(0, 1))
+    data_x_numerical = scaler_x.fit_transform(np.array(data_x_numerical))
+
+    scaler_y = MinMaxScaler(feature_range=(0, 1))
+    data_y = scaler_y.fit_transform(np.array(data[output_features]))
+
+    data_x = np.hstack([data_x_numerical, data_x_time.values, data_x_category])
+    '''
+    data_train_x = data_x[:smaller_2019+1, :]
+    data_train_y = data_y[:smaller_2019+1, :]
+    data_validate_x = data_x[larger_2018:smaller_2019+1, :]
+    data_validate_y = data_y[larger_2018:smaller_2019+1, :]
+    data_test_x = data_x[larger_2019:smaller_2020+1, :]
+    data_test_y = data_y[larger_2019:smaller_2020+1, :]
     dataloader_train, X_train, y_train = data_loader(window_size, length_size, batch_size, data_train_x, data_train_y)
+    dataloader_train, X_validate, y_validate = data_loader(window_size, length_size, batch_size, data_validate_x, data_validate_y)
     dataloader_test, X_test, y_test = data_loader(window_size, length_size, batch_size, data_test_x, data_test_y)
 
-    model_train(model_type)
-    y_train_pred, y_train_real = model_test(X_train, y_train, model_type, scaler_y)
+    _, training_time = model_train(model_type, patience = 10)
+    y_validate_pred, y_validate_real = model_test(X_validate, y_validate, model_type, scaler_y)
     y_test_pred, y_test_real = model_test(X_test, y_test, model_type, scaler_y)
-    train_result = generate_predictions(train_result, y_train_pred)
-    test_result = generate_predictions(test_result, y_test_pred)
+    train_result = generate_predictions(validate_result, y_validate_pred, length_size)
+    test_result = generate_predictions(test_result, y_test_pred, length_size)
 
-    train_mae, train_rmse, train_r2 = calculate_errors(train_result['Power'], train_result['predict'])
-    test_mae, test_rmse, test_r2 = calculate_errors(test_result['Power'], test_result['predict'])
-
+    train_mae, train_rmse, train_r2, train_mape = calculate_errors(train_result['Power'], train_result['predict'])
+    test_mae, test_rmse, test_r2, test_mape = calculate_errors(test_result['Power'], test_result['predict'])
+    test_result.to_csv(f'test_result/{loaction_type}_{model_type}_test_result.csv', index=False)
+    
     score = pd.DataFrame({
             'Dataset': ['Train', 'Test'],
             'MAE': [train_mae, test_mae],
             'RMSE': [train_rmse, test_rmse],
-            'r2': [train_r2, test_r2]
+            'r2': [train_r2, test_r2],
+            'MAPE': [train_mape, test_mape],
+            'Training Time': [training_time, ' ']
     })
 
-
     score.to_csv((f"result/{loaction_type}_{model_type}.csv"), index=True)
-    plot_predictions(train_result, test_result)
+    #plot_predictions(test_result)
