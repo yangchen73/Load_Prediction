@@ -4,51 +4,57 @@ import torch
 import random
 import torch.nn as nn
 import torch.optim as optim
-import torch.nn.functional
 import matplotlib.pyplot as plt
 import time
 import os
 from sklearn.metrics import mean_absolute_error, mean_squared_error, r2_score, mean_absolute_percentage_error
-from sklearn.preprocessing import OneHotEncoder
+from sklearn.preprocessing import MinMaxScaler
+
+# Import models
 from model.LSTMKAN import LSTM_kan
 from model.GRU import GRU
 from model.LSTM import LSTM
 from model.KAN import KAN
 from model.MLP import MLP
-from sklearn.preprocessing import MinMaxScaler
 
+# Configuration
 loaction_type = 'resident'
 model_type = 'LSTM_kan'
 
-input_features_office = ['Power','RMS','max_power','10%_quantile_power','min_power','is_holiday','Hour','power_t-1','Duration_Above90%','90%_quantile_power','power_t-2','approx_max','median_power','Peak_to_Peak','Duration_Below10%','power_t-9']
-
-input_features_commercial = ['Power','RMS','max_power','10%_quantile_power','90%_quantile_power','min_power','power_t-1','median_power','Hour','power_t-12','power_t-9','Duration_Above90%','approx_energy','power_t-6','power_t-2','approx_max']
-
-input_features_public = ['Power','power_t-1','RMS','max_power','min_power','90%_quantile_power','10%_quantile_power','Hour','power_t-2','Duration_Below10%','power_t-12','power_t-5','Temperature','median_power','approx_max','power_t-3']
-
-input_features_resident = ['Power','RMS','max_power','power_t-1','90%_quantile_power','min_power','10%_quantile_power','Hour','median_power','approx_energy','approx_mean','is_holiday','approx_max','power_t-6','FFT_Total_energy','power_t-7']
-
-input_features_dict = {'office': input_features_office, 'commercial': input_features_commercial, 'public': input_features_public,'resident': input_features_resident}
+input_features_dict = {
+    'office': ['Power', 'RMS', 'max_power', '10%_quantile_power', 'min_power', 'is_holiday', 'Hour', 'power_t-1', 
+               'Duration_Above90%', '90%_quantile_power', 'power_t-2', 'approx_max', 'median_power', 
+               'Peak_to_Peak', 'Duration_Below10%', 'power_t-9'],
+    'commercial': ['Power', 'RMS', 'max_power', '10%_quantile_power', '90%_quantile_power', 'min_power', 'power_t-1', 
+                   'median_power', 'Hour', 'power_t-12', 'power_t-9', 'Duration_Above90%', 'approx_energy', 
+                   'power_t-6', 'power_t-2', 'approx_max'],
+    'public': ['Power', 'power_t-1', 'RMS', 'max_power', 'min_power', '90%_quantile_power', '10%_quantile_power', 'Hour',
+               'power_t-2', 'Duration_Below10%', 'power_t-12', 'power_t-5', 'Temperature', 'median_power', 'approx_max',
+               'power_t-3'],
+    'resident': ['Power', 'RMS', 'max_power', 'power_t-1', '90%_quantile_power', 'min_power', '10%_quantile_power', 
+                 'Hour', 'median_power', 'approx_energy', 'approx_mean', 'is_holiday', 'approx_max', 'power_t-6', 
+                 'FFT_Total_energy', 'power_t-7']
+}
 
 output_features = ['Power']
-
 train_ratio = 0.8
 window_size = 24
 input_dim = len(input_features_dict[loaction_type]) - 1
 output_dim = len(output_features)
-length_size = 720
+length_size = 360
 batch_size = 128
 epochs = 100
 
+# Function to set seeds for reproducibility
 def set_seed(seed_value=42):
-    random.seed(seed_value)  
-    np.random.seed(seed_value)  
-    torch.manual_seed(seed_value)  
+    random.seed(seed_value)
+    np.random.seed(seed_value)
+    torch.manual_seed(seed_value)
     if torch.cuda.is_available():
-        torch.cuda.manual_seed(seed_value)  
-        torch.cuda.manual_seed_all(seed_value) 
-    torch.backends.cudnn.deterministic = True  
-    torch.backends.cudnn.benchmark = False  
+        torch.cuda.manual_seed(seed_value)
+        torch.cuda.manual_seed_all(seed_value)
+    torch.backends.cudnn.deterministic = True
+    torch.backends.cudnn.benchmark = False
 
 def data_loader(window, length_size, batch_size, data_x, data_y):
     seq_len = window  
@@ -71,7 +77,7 @@ def data_loader(window, length_size, batch_size, data_x, data_y):
     dataloader = torch.utils.data.DataLoader(ds, batch_size=batch_size,shuffle=True) 
     return dataloader, x_data, y_data
 
-def model_train(model_type, patience=10):
+def model_train(model_type, length_size, patience=10):
     start_time = time.time()
     best_val_loss = float('inf') 
     epochs_no_improve = 0  
@@ -138,7 +144,7 @@ def model_train(model_type, patience=10):
 
     return net, training_time
 
-def model_test(x_data, y_data, model_type, scaler):
+def model_test(x_data, y_data, length_size, model_type, scaler):
     if model_type == "GRU":
         net = GRU(input_size = input_dim, hidden_size = 64, num_layers = 2, output_size = length_size)
         net.load_state_dict(torch.load(f'model_data/{loaction_type}_GRU.pt', weights_only=False))  
@@ -146,7 +152,7 @@ def model_test(x_data, y_data, model_type, scaler):
         net = LSTM(input_size = input_dim, hidden_size = 66, num_layers = 2, output_size = length_size)
         net.load_state_dict(torch.load(f'model_data/{loaction_type}_LSTM.pt', weights_only=False))
     elif model_type == "LSTM_kan":
-        net = LSTM_kan(input_size=input_dim, hidden_size=64, num_layers=2, output_size1= 72, output_size2 = length_size)
+        net = LSTM_kan(input_size=input_dim, hidden_size = 64, num_layers=2, output_size1= 72, output_size2 = length_size)
         net.load_state_dict(torch.load(f'model_data/{loaction_type}_LSTM_kan.pt', weights_only=False))
     elif model_type == "KAN":
         net = KAN(layers_hidden=[input_dim*window_size, length_size*output_dim], grid_size=5, spline_order=3)
@@ -278,7 +284,6 @@ if __name__ == '__main__':
     data_x = pd.DataFrame(data_x)
     data_x =  pd.concat([data_x, no_need_scaler], axis = 1)
     data_x = np.array(data_x)
-    print(data_x.shape)
     scaler_y = MinMaxScaler(feature_range=(0, 1))
     data_y = scaler_y.fit_transform(np.array(data[output_features]))
 
@@ -306,11 +311,12 @@ if __name__ == '__main__':
     data_validate_y = data_y[larger_2018:smaller_2019+1, :]
     data_test_x = data_x[larger_2019:smaller_2020+1, :]
     data_test_y = data_y[larger_2019:smaller_2020+1, :]
+    '''
     dataloader_train, X_train, y_train = data_loader(window_size, length_size, batch_size, data_train_x, data_train_y)
     dataloader_train, X_validate, y_validate = data_loader(window_size, length_size, batch_size, data_validate_x, data_validate_y)
     dataloader_test, X_test, y_test = data_loader(window_size, length_size, batch_size, data_test_x, data_test_y)
 
-    _, training_time = model_train(model_type, patience = 10)
+    _, training_time = model_train(model_type, patience = 5)
     y_validate_pred, y_validate_real = model_test(X_validate, y_validate, model_type, scaler_y)
     y_test_pred, y_test_real = model_test(X_test, y_test, model_type, scaler_y)
     train_result = generate_predictions(validate_result, y_validate_pred, length_size)
@@ -331,3 +337,44 @@ if __name__ == '__main__':
 
     score.to_csv((f"result/{loaction_type}_{model_type}.csv"), index=True)
     #plot_predictions(test_result)
+    '''
+    results = []
+    for half_day in range(2, 62, 1):
+        dataloader_train, X_train, y_train = data_loader(window_size, half_day*12, batch_size, data_train_x, data_train_y)
+        dataloader_train, X_validate, y_validate = data_loader(window_size, half_day*12, batch_size, data_validate_x, data_validate_y)
+        dataloader_test, X_test, y_test = data_loader(window_size, half_day*12, batch_size, data_test_x, data_test_y)
+
+        _, training_time = model_train(model_type, half_day*12, patience = 8)
+        y_validate_pred, y_validate_real = model_test(X_validate, y_validate, half_day*12, model_type, scaler_y)
+        y_test_pred, y_test_real = model_test(X_test, y_test, half_day*12, model_type, scaler_y)
+        train_result = generate_predictions(validate_result, y_validate_pred, half_day*12)
+        test_result = generate_predictions(test_result, y_test_pred, half_day*12)
+
+        train_mae, train_rmse, train_r2, train_mape = calculate_errors(train_result['Power'], train_result['predict'])
+        test_mae, test_rmse, test_r2, test_mape = calculate_errors(test_result['Power'], test_result['predict'])
+        #test_result.to_csv(f'test_result/{loaction_type}_{model_type}_test_result.csv', index=False)
+
+        results.append({
+             " ":0, 
+            "Dataset": "Train",
+            "MAE": train_mae,
+            "RMSE": train_rmse,
+            "r2": train_r2,
+            "mape": train_mape,
+            "prediction_step": half_day*12, 
+            "Day": half_day*0.5,
+        })
+
+        results.append({
+            " ":1, 
+            "Dataset": "Test",
+            "MAE": test_mae,
+            "RMSE": test_rmse,
+            "r2": test_r2,
+            "mape": test_mape,
+            "prediction_step": half_day*12, 
+            "Day": half_day*0.5,
+        })
+
+    results = pd.DataFrame(results)
+    results.to_csv(f"result/score_all/{loaction_type}_{model_type}_score_all.csv", index=False)

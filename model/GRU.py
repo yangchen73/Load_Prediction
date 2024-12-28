@@ -21,7 +21,6 @@ class GRU(nn.Module):
         out, _ = self.gru(x, h0)
         #out = self.dropout(out[:, -1, :])  
         out = self.func(out[:, -1, :])
-        out = torch.sigmoid(out)
         return out
 
     
